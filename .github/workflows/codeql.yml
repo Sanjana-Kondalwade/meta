@@ -108,11 +108,21 @@ jobs:
             - '**/test-*.hpp'
             - '**/*-tests/**'
             - '**/tests/**'
+            - '**/testsuite/**'
 
           queries:
             - uses: security-and-quality
           EOF
           echo "CodeQL config created"
+
+      - name: Fetch upstream source with zopen
+        if: ${{ hashFiles('buildenv') != '' }}
+        run: |
+          export PATH="$PWD/meta/bin:$PATH"
+          git config --global user.email "zopenCommunity@ibm.com"
+          git config --global user.name "Zopen Community"
+          zopen build -g
+          ls -lrt
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
@@ -120,34 +130,6 @@ jobs:
           languages: ${{ inputs.languages || 'python' }}
           build-mode: ${{ inputs.build-mode || 'none' }}
           config-file: ./.github/codeql/codeql-config.yml
-
-      - name: Clone tool repository
-        if: ${{ inputs.repo != '' }}
-        run: |
-          TARGET_REPO="${{ steps.repo-info.outputs.repo }}"
-          echo "Target Repository: ${TARGET_REPO}"
-          TOOL_NAME=$(basename "${TARGET_REPO}")
-          echo "Tool Name: ${TOOL_NAME}"
-          if [ -d "$TOOL_NAME" ]; then
-            echo "Tool repository already exists, skipping clone"
-          else
-            git clone https://github.com/${TARGET_REPO}.git
-            echo "Tool repository cloned: $TOOL_NAME"
-          fi
-
-      - name: Build with zopen
-        if: ${{ inputs.repo != '' }}
-        run: |
-          export PATH="$PWD/meta/bin:$PATH"
-          git config --global user.email "zopenCommunity@ibm.com"
-          git config --global user.name "Zopen Community"
-
-          TARGET_REPO="${{ steps.repo-info.outputs.repo }}"
-          TOOL_NAME=$(basename "${TARGET_REPO}")
-          echo "Tool Name: ${TOOL_NAME}"
-          cd $TOOL_NAME
-          zopen build -g
-          ls -lrt
 
       - name: Perform CodeQL Analysis
         id: codeql_analyze
