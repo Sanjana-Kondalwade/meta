@@ -155,7 +155,6 @@ jobs:
             echo "total=0"            >> "$GITHUB_OUTPUT"
             echo "error=0"           >> "$GITHUB_OUTPUT"
             echo "warning=0"         >> "$GITHUB_OUTPUT"
-            echo "note=0"            >> "$GITHUB_OUTPUT"
             echo "sarif_found=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -169,21 +168,20 @@ jobs:
           with open(sarif_path) as f:
               sarif = json.load(f)
 
-          counts = {"error": 0, "warning": 0, "note": 0}
+          # Only count error (critical/high) and warning (medium); skip note (low)
+          counts = {"error": 0, "warning": 0}
           for run in sarif.get("runs", []):
               for result in run.get("results", []):
                   level = result.get("level", "warning")
                   if level in counts:
                       counts[level] += 1
-                  else:
-                      counts["warning"] += 1  # treat unknown levels as warnings
+                  # note and unknown levels are intentionally ignored
 
           total = sum(counts.values())
           with open(output_path, "a") as out:
               out.write(f"total={total}\n")
               out.write(f"error={counts['error']}\n")
               out.write(f"warning={counts['warning']}\n")
-              out.write(f"note={counts['note']}\n")
           PYEOF
 
       - name: Create Job Summary
@@ -194,7 +192,6 @@ jobs:
           TOTAL="${{ steps.parse_sarif.outputs.total }}"
           ERRORS="${{ steps.parse_sarif.outputs.error }}"
           WARNINGS="${{ steps.parse_sarif.outputs.warning }}"
-          NOTES="${{ steps.parse_sarif.outputs.note }}"
           SARIF_FOUND="${{ steps.parse_sarif.outputs.sarif_found }}"
 
           if [ "$OUTCOME" = "success" ]; then
@@ -217,15 +214,14 @@ jobs:
             echo "| Runner   | \`${{ runner.os }}-${{ runner.arch }}\` |"
             echo "| Trigger  | \`${{ github.event_name }}\` |"
             echo ""
-            echo "## Findings"
+            echo "## Findings (Critical/High/Medium only)"
             echo ""
             if [ "$SARIF_FOUND" = "true" ]; then
-              echo "| Severity  | Count |"
-              echo "|-----------|------:|"
-              echo "| Error     | ${ERRORS} |"
-              echo "| Warning   | ${WARNINGS} |"
-              echo "| Note      | ${NOTES} |"
-              echo "| **Total** | **${TOTAL}** |"
+              echo "| Severity        | Count |"
+              echo "|-----------------|------:|"
+              echo "| Error (High+)   | ${ERRORS} |"
+              echo "| Warning (Medium)| ${WARNINGS} |"
+              echo "| **Total**       | **${TOTAL}** |"
             else
               echo "No SARIF results file found."
             fi
