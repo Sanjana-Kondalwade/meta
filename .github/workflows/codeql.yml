@@ -184,6 +184,119 @@ jobs:
               out.write(f"warning={counts['warning']}\n")
           PYEOF
 
+      - name: Copilot Analysis of findings
+        id: copilot_analysis
+        if: ${{ steps.parse_sarif.outputs.sarif_found == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SARIF_FILE=$(find sarif-results/ -name '*.sarif' 2>/dev/null | head -n 1)
+          python3 << 'PYEOF'
+          import json, os, urllib.request, urllib.error
+
+          sarif_path = os.popen("find sarif-results/ -name '*.sarif' 2>/dev/null | head -n 1").read().strip()
+          gh_token   = os.environ["GH_TOKEN"]
+          workspace  = os.environ.get("GITHUB_WORKSPACE", ".")
+          summary_path = os.environ["GITHUB_STEP_SUMMARY"]
+
+          with open(sarif_path) as f:
+              sarif = json.load(f)
+
+          # Collect up to 5 error-level findings with source context
+          findings = []
+          for run in sarif.get("runs", []):
+              rules = {r["id"]: r for r in run.get("tool", {}).get("driver", {}).get("rules", [])}
+              for result in run.get("results", []):
+                  if result.get("level") != "error":
+                      continue
+                  locs = result.get("locations", [])
+                  if not locs:
+                      continue
+                  loc   = locs[0].get("physicalLocation", {})
+                  fpath = loc.get("artifactLocation", {}).get("uri", "")
+                  region = loc.get("region", {})
+                  start  = region.get("startLine", 1)
+                  rule_id = result.get("ruleId", "")
+                  rule_obj = rules.get(rule_id, {})
+                  message = result.get("message", {}).get("text", "")
+                  description = (rule_obj.get("fullDescription") or rule_obj.get("shortDescription") or {}).get("text", "")
+
+                  # Read ±10 lines of source context
+                  abs_path = os.path.join(workspace, fpath)
+                  snippet = ""
+                  try:
+                      with open(abs_path) as sf:
+                          lines = sf.readlines()
+                      lo = max(0, start - 11)
+                      hi = min(len(lines), start + 10)
+                      numbered = [f"{lo+i+1}: {lines[lo+i].rstrip()}" for i in range(hi - lo)]
+                      snippet = "\n".join(numbered)
+                  except Exception:
+                      snippet = "(source not readable)"
+
+                  findings.append({
+                      "rule_id": rule_id,
+                      "message": message,
+                      "description": description,
+                      "file": fpath,
+                      "line": start,
+                      "snippet": snippet,
+                  })
+                  if len(findings) >= 5:
+                      break
+              if len(findings) >= 5:
+                  break
+
+          if not findings:
+              with open(summary_path, "a") as out:
+                  out.write("\n## Copilot Analysis\n\nNo error-level findings to analyse.\n")
+              raise SystemExit(0)
+
+          # Call GitHub Models API (gpt-4o) for each finding
+          api_url = "https://models.inference.ai.azure.com/chat/completions"
+          headers = {
+              "Content-Type": "application/json",
+              "Authorization": f"Bearer {gh_token}",
+          }
+
+          analyses = []
+          for f in findings:
+              prompt = (
+                  f"You are a security code reviewer.\n"
+                  f"CodeQL rule `{f['rule_id']}` fired on `{f['file']}` line {f['line']}.\n"
+                  f"Rule description: {f['description']}\n"
+                  f"Alert message: {f['message']}\n\n"
+                  f"Source context (lines around the finding):\n```c\n{f['snippet']}\n```\n\n"
+                  f"In 3-5 sentences: explain exactly what is wrong at that line, "
+                  f"why it is a security risk, and give a concrete one-line code fix."
+              )
+              body = json.dumps({
+                  "model": "gpt-4o",
+                  "messages": [{"role": "user", "content": prompt}],
+                  "max_tokens": 300,
+                  "temperature": 0.2,
+              }).encode()
+
+              try:
+                  req = urllib.request.Request(api_url, data=body, headers=headers, method="POST")
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      data = json.load(resp)
+                  analysis_text = data["choices"][0]["message"]["content"].strip()
+              except Exception as e:
+                  analysis_text = f"_(Analysis unavailable: {e})_"
+
+              analyses.append((f, analysis_text))
+
+          # Write to job summary
+          with open(summary_path, "a") as out:
+              out.write("\n## Copilot Analysis (top error-level findings)\n\n")
+              for f, analysis in analyses:
+                  out.write(f"### `{f['rule_id']}` — {f['file']}:{f['line']}\n\n")
+                  out.write(f"**Alert:** {f['message']}\n\n")
+                  out.write(f"{analysis}\n\n")
+                  out.write("---\n\n")
+          PYEOF
+
       - name: Create Job Summary
         if: always()
         run: |
@@ -210,7 +323,7 @@ jobs:
             echo "| Setting  | Value |"
             echo "|----------|-------|"
             echo "| Language | \`${LANGUAGE}\` |"
-            echo "| Queries  | \`security-and-quality\` |"
+            echo "| Queries  | \`security-extended\` |"
             echo "| Runner   | \`${{ runner.os }}-${{ runner.arch }}\` |"
             echo "| Trigger  | \`${{ github.event_name }}\` |"
             echo ""
